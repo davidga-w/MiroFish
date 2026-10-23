@@ -688,12 +688,23 @@ watch(() => props.systemLogs?.length, () => {
   })
 })
 
-// 页面重新加载时接入仍在进行的模拟，而不是用 force 重启覆盖已有进度
+// 页面重新加载时接入已有的模拟，而不是用 force 重启覆盖已有进度或结果。
+// 返回 true=已接入（进行中，或保留已结束的结果），false=需要启动新模拟，null=无法读取状态（此时不自动重启）
 const attachToActiveRun = async () => {
   try {
     const res = await getRunStatus(props.simulationId)
     const data = res.success ? res.data : null
-    if (!data || !['starting', 'running', 'paused', 'stopping'].includes(data.runner_status)) {
+    const status = data?.runner_status
+    if (['completed', 'stopped', 'failed'].includes(status) && !window.confirm(t('log.confirmRestartFinishedSim'))) {
+      // 保留已结束的模拟结果，可直接生成报告
+      addLog(status === 'failed' ? t('log.simFailed') : t('log.simCompleted'))
+      runStatus.value = data
+      phase.value = 2
+      emit('update-status', status === 'failed' ? 'error' : 'completed')
+      fetchRunStatusDetail()
+      return true
+    }
+    if (!['starting', 'running', 'paused', 'stopping'].includes(status)) {
       return false
     }
     addLog(t('log.attachedToRunningSim'))
@@ -705,13 +716,14 @@ const attachToActiveRun = async () => {
     return true
   } catch (err) {
     console.warn('获取运行状态失败:', err)
-    return false
+    addLog(t('log.runStatusCheckFailed', { error: err.message }))
+    return null
   }
 }
 
 onMounted(async () => {
   addLog(t('log.step3Init'))
-  if (props.simulationId && !(await attachToActiveRun())) {
+  if (props.simulationId && (await attachToActiveRun()) === false) {
     doStartSimulation()
   }
 })

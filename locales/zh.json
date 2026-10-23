@@ -526,6 +526,8 @@
     "step2Init": "Step2 环境搭建初始化",
     "step3Init": "Step3 模拟运行初始化",
     "attachedToRunningSim": "模拟正在进行中，已接入实时状态",
+    "runStatusCheckFailed": "无法确认模拟是否正在运行（{error}），为避免覆盖进度未自动重启，请刷新页面重试",
+    "confirmRestartFinishedSim": "该模拟已经结束。确定要重新开始吗？这会删除已完成的运行结果。",
     "startingDualSim": "正在启动双平台并行模拟...",
     "setMaxRounds": "设置最大模拟轮数: {rounds}",
     "graphMemoryUpdateEnabled": "已开启动态图谱更新模式",

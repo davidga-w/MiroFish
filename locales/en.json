@@ -526,6 +526,8 @@
     "step2Init": "Step 2 environment setup initialized",
     "step3Init": "Step 3 simulation run initialized",
     "attachedToRunningSim": "Simulation already in progress, showing live status",
+    "runStatusCheckFailed": "Could not check whether this simulation is already running ({error}), so it was not restarted. Reload the page to retry.",
+    "confirmRestartFinishedSim": "This simulation has already finished. Start it over? That deletes the finished run.",
     "startingDualSim": "Starting dual-platform parallel simulation...",
     "setMaxRounds": "Max simulation rounds set to: {rounds}",
     "graphMemoryUpdateEnabled": "Dynamic graph memory update enabled",
