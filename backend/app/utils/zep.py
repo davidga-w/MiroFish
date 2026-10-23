@@ -123,6 +123,19 @@ def _retry_after_seconds(error: BaseException) -> float | None:
         return None
 
 
+def is_unaccepted_zep_write_error(error: BaseException) -> bool:
+    """Return whether a failed write certainly never reached Zep processing.
+
+    Zep rejects a rate-limited (429) request before processing it, and a
+    connection failure means the request was never sent, so replaying either
+    cannot duplicate a non-idempotent write such as ``graph.add``.
+    """
+
+    if isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout)):
+        return True
+    return isinstance(error, ZepApiError) and error.status_code == 429
+
+
 def call_zep_read_with_retry(
     operation: Callable[[], T],
     *,
@@ -134,6 +147,49 @@ def call_zep_read_with_retry(
 ) -> T:
     """Retry a safe Zep read only for transport, 408, 429, or 5xx errors."""
 
+    return _call_zep_with_retry(
+        operation,
+        operation_name=operation_name,
+        should_retry=is_retryable_zep_error,
+        max_attempts=max_attempts,
+        initial_delay=initial_delay,
+        max_delay=max_delay,
+        sleep=sleep,
+    )
+
+
+def call_zep_write_with_retry(
+    operation: Callable[[], T],
+    *,
+    operation_name: str,
+    max_attempts: int = 6,
+    initial_delay: float = 2.0,
+    max_delay: float = 60.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> T:
+    """Retry a non-idempotent Zep write only when it was certainly not accepted."""
+
+    return _call_zep_with_retry(
+        operation,
+        operation_name=operation_name,
+        should_retry=is_unaccepted_zep_write_error,
+        max_attempts=max_attempts,
+        initial_delay=initial_delay,
+        max_delay=max_delay,
+        sleep=sleep,
+    )
+
+
+def _call_zep_with_retry(
+    operation: Callable[[], T],
+    *,
+    operation_name: str,
+    should_retry: Callable[[BaseException], bool],
+    max_attempts: int,
+    initial_delay: float,
+    max_delay: float,
+    sleep: Callable[[float], None],
+) -> T:
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1")
 
@@ -141,7 +197,7 @@ def call_zep_read_with_retry(
         try:
             return operation()
         except Exception as error:
-            if attempt == max_attempts or not is_retryable_zep_error(error):
+            if attempt == max_attempts or not should_retry(error):
                 raise
 
             retry_after = _retry_after_seconds(error)
