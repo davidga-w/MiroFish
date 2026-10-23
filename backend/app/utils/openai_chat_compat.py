@@ -2,11 +2,13 @@
 OpenAI Chat Completions compatibility helpers.
 
 This module keeps existing behavior for legacy models/providers while
-gracefully adapting request parameters for GPT-5 family models.
+gracefully adapting request parameters for GPT-5 family models, and
+falling back from JSON mode when a provider explicitly rejects it.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 
@@ -55,6 +57,85 @@ def create_chat_completion(
             kwargs["max_tokens"] = max_tokens
 
     return client.chat.completions.create(**kwargs)
+
+
+def is_response_format_unsupported(error: Exception) -> bool:
+    """Detect an explicit provider rejection of JSON response_format."""
+
+    if getattr(error, "status_code", None) not in {400, 422}:
+        return False
+
+    body = getattr(error, "body", None)
+    if not isinstance(body, dict):
+        return False
+
+    details = body.get("error", body)
+    if not isinstance(details, dict):
+        return False
+
+    param = str(details.get("param") or "").strip().lower()
+    if param == "response_format" or param.startswith("response_format."):
+        return True
+
+    message = str(details.get("message") or "").strip().lower()
+    if "response_format" not in message:
+        return False
+
+    # Validation errors that name the rejected field first, e.g. Anthropic's
+    # OpenAI-compatible API: "response_format.type: Input should be 'json_schema'".
+    if re.match(r"response_format(\.\w+)*\s*:", message):
+        return True
+
+    code = str(details.get("code") or "").lower()
+    unsupported_codes = {
+        "unsupported_parameter",
+        "unsupported_value",
+        "unknown_parameter",
+        "invalid_parameter",
+    }
+    unsupported_phrases = (
+        "not support",
+        "unsupported",
+        "unknown parameter",
+        "unrecognized parameter",
+    )
+    return code in unsupported_codes or any(
+        phrase in message for phrase in unsupported_phrases
+    )
+
+
+def create_json_chat_completion(
+    client: Any,
+    *,
+    model: str,
+    messages: List[Dict[str, Any]],
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+) -> Any:
+    """
+    Request JSON mode; retry once without it only when the provider explicitly
+    rejects response_format. The prompt itself must still ask for JSON.
+    """
+    try:
+        return create_chat_completion(
+            client,
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+        )
+    except Exception as error:
+        if not is_response_format_unsupported(error):
+            raise
+
+    return create_chat_completion(
+        client,
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
 
 
 def extract_chat_completion_text(response: Any) -> str:

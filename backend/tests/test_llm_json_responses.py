@@ -203,6 +203,29 @@ def test_response_format_fallback_keeps_content_retry_available():
     assert "max_tokens" not in sequence.calls[2]
 
 
+def test_chat_json_falls_back_for_field_validation_rejection():
+    # Anthropic's OpenAI-compatible API rejects json_object this way.
+    rejection = ProviderError(
+        status_code=400,
+        body={
+            "error": {
+                "code": "invalid_request_error",
+                "message": "response_format.type: Input should be 'json_schema'",
+                "type": "invalid_request_error",
+                "param": None,
+            }
+        },
+    )
+    sequence = CompletionSequence(rejection, _response('{"ok": true}'))
+    client = _client_for(sequence)
+
+    assert client.chat_json(
+        messages=[{"role": "user", "content": "Return JSON"}],
+    ) == {"ok": True}
+    assert sequence.calls[0]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in sequence.calls[1]
+
+
 def test_chat_json_defaults_to_one_content_attempt():
     sequence = CompletionSequence(
         _response(None),
