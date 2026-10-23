@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.utils.openai_chat_compat import (
+    claude_rejects_temperature,
     create_chat_completion,
     create_json_chat_completion,
     extract_chat_completion_text,
@@ -104,6 +105,43 @@ def test_provider_error_is_propagated_without_guessing_or_retrying():
 )
 def test_gpt5_family_detection(model, expected):
     assert is_gpt5_family(model) is expected
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("claude-sonnet-4-6", False),
+        ("claude-haiku-4-5-20251001", False),
+        ("claude-sonnet-4-20250514", False),
+        ("claude-3-5-sonnet-20241022", False),
+        ("claude-opus-4-7", True),
+        ("claude-sonnet-5", True),
+        ("claude-sonnet-5-5", True),
+        (" Claude-Haiku-5-5 ", True),
+        ("claude-fable-5-1", True),
+        ("gpt-5", False),
+        (None, False),
+    ],
+)
+def test_claude_temperature_rejection_detection(model, expected):
+    assert claude_rejects_temperature(model) is expected
+
+
+def test_newer_claude_model_omits_temperature_but_keeps_token_limit():
+    recorder = CompletionRecorder()
+    messages = [{"role": "user", "content": "hello"}]
+
+    create_chat_completion(
+        client_for(recorder),
+        model="claude-sonnet-5-5",
+        messages=messages,
+        temperature=0.7,
+        max_tokens=100,
+    )
+
+    assert recorder.calls == [
+        {"model": "claude-sonnet-5-5", "messages": messages, "max_tokens": 100}
+    ]
 
 
 def test_extracts_text_from_supported_content_shapes():

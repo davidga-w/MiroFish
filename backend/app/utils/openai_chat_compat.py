@@ -2,8 +2,8 @@
 OpenAI Chat Completions compatibility helpers.
 
 This module keeps existing behavior for legacy models/providers while
-gracefully adapting request parameters for GPT-5 family models, and
-falling back from JSON mode when a provider explicitly rejects it.
+gracefully adapting request parameters for GPT-5 family and Claude 4.7+
+models, and falling back from JSON mode when a provider explicitly rejects it.
 """
 
 from __future__ import annotations
@@ -19,6 +19,25 @@ def is_gpt5_family(model: Optional[str]) -> bool:
     return model.strip().lower().startswith("gpt-5")
 
 
+# claude-<family>-<major>[-<minor>], e.g. claude-sonnet-5-5, claude-opus-4-7,
+# claude-sonnet-4-20250514 (a date suffix is not a minor version).
+_CLAUDE_VERSION = re.compile(r"^claude-(?:[a-z]+-)?(\d+)(?:-(\d{1,2}))?(?=-|$)")
+
+
+def claude_rejects_temperature(model: Optional[str]) -> bool:
+    """Return True for Claude 4.7+ models, which reject `temperature`.
+
+    Anthropic's API answers 400 ("`temperature` is deprecated for this model")
+    when these models receive a temperature, so it must be omitted.
+    """
+    if not model:
+        return False
+    match = _CLAUDE_VERSION.match(model.strip().lower())
+    if not match:
+        return False
+    return (int(match.group(1)), int(match.group(2) or 0)) >= (4, 7)
+
+
 def create_chat_completion(
     client: Any,
     *,
@@ -32,9 +51,9 @@ def create_chat_completion(
     Create a chat completion with model-specific request parameters.
 
     Compatibility strategy:
-    - For GPT-5 family, avoid sending temperature by default.
+    - For GPT-5 family and Claude 4.7+ models, avoid sending temperature.
     - For token limit, use `max_completion_tokens` on GPT-5, `max_tokens` otherwise.
-    - Preserve the legacy request shape for every non-GPT-5 model/provider.
+    - Preserve the legacy request shape for every other model/provider.
     - Propagate provider errors unchanged instead of guessing from message text.
     """
     kwargs: Dict[str, Any] = {
@@ -47,7 +66,11 @@ def create_chat_completion(
 
     gpt5_family = is_gpt5_family(model)
 
-    if temperature is not None and not gpt5_family:
+    if (
+        temperature is not None
+        and not gpt5_family
+        and not claude_rejects_temperature(model)
+    ):
         kwargs["temperature"] = temperature
 
     if max_tokens is not None:
