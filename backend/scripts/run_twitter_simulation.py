@@ -130,6 +130,11 @@ except ImportError as e:
     print("请先安装: pip install oasis-ai camel-ai")
     sys.exit(1)
 
+from twhin_embedding_cache import install_twhin_embedding_cache
+
+# Keep the Twitter recommender's memory flat over long runs
+install_twhin_embedding_cache()
+
 
 # IPC相关常量
 IPC_COMMANDS_DIR = "ipc_commands"

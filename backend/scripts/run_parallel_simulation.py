@@ -173,6 +173,11 @@ except ImportError as e:
     print("请先安装: pip install oasis-ai camel-ai")
     sys.exit(1)
 
+from twhin_embedding_cache import install_twhin_embedding_cache
+
+# Keep the Twitter recommender's memory flat over long runs
+install_twhin_embedding_cache()
+
 
 # Twitter可用动作（不包含INTERVIEW，INTERVIEW只能通过ManualAction手动触发）
 TWITTER_ACTIONS = [

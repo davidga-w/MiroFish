@@ -23,9 +23,9 @@ ZEP_CLOUD_BASE_URL = "https://api.getzep.com/api/v2"
 # MiroFish used before introducing the shared client. This is an internal
 # integration policy, not a deployment setting users need to tune.
 ZEP_HTTP_REQUEST_TIMEOUT_SECONDS = 60.0
-# Zep ingestion is asynchronous and may take several minutes. Preserve the
-# original GraphBuilder deadline while keeping it separate from HTTP timeout.
-ZEP_INGESTION_WAIT_TIMEOUT_SECONDS = 600
+# Zep ingestion is asynchronous and may take a long time: a 73-chunk graph
+# build has been observed at ~3 episodes/minute, past the old 10-minute limit.
+ZEP_INGESTION_WAIT_TIMEOUT_SECONDS = 3600
 MAX_ZEP_SEARCH_QUERY_CHARS = 400
 MAX_ZEP_SEARCH_RESULTS = 50
 
