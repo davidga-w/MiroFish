@@ -4,6 +4,7 @@ Step2: Zep实体读取与过滤、OASIS模拟准备与运行（全程自动化�
 """
 
 import os
+import threading
 import traceback
 from contextlib import nullcontext
 from flask import request, jsonify, send_file
@@ -23,8 +24,27 @@ from ..utils.logger import get_logger
 from ..utils.locale import t, get_locale, set_locale
 from ..utils.zep_lifecycle import get_graph_readers, graph_lifecycle_lock
 from ..models.project import ProjectManager
+from ..models.task import TaskManager, TaskStatus
 
 logger = get_logger('mirofish.api.simulation')
+_prepare_locks: dict[str, threading.Lock] = {}
+_prepare_locks_guard = threading.Lock()
+
+
+def _simulation_prepare_lock(simulation_id: str) -> threading.Lock:
+    with _prepare_locks_guard:
+        return _prepare_locks.setdefault(simulation_id, threading.Lock())
+
+
+def _active_prepare_task_id(simulation_id: str) -> str | None:
+    """Return the in-flight prepare task for a simulation, if there is one."""
+    for task in TaskManager().list_tasks(task_type="simulation_prepare"):
+        if (
+            task["metadata"].get("simulation_id") == simulation_id
+            and task["status"] in {TaskStatus.PENDING.value, TaskStatus.PROCESSING.value}
+        ):
+            return task["task_id"]
+    return None
 
 
 def _get_default_platform(simulation_id: str) -> str:
@@ -388,6 +408,17 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
 
 @simulation_bp.route('/prepare', methods=['POST'])
 def prepare_simulation():
+    """Serialize prepare claims for the same simulation within this process."""
+
+    data = request.get_json(silent=True)
+    simulation_id = data.get('simulation_id') if isinstance(data, dict) else None
+    if not isinstance(simulation_id, str) or not simulation_id:
+        return _prepare_simulation_impl()
+    with _simulation_prepare_lock(simulation_id):
+        return _prepare_simulation_impl()
+
+
+def _prepare_simulation_impl():
     """
     准备模拟环境（异步任务，LLM智能生成所有参数）
     
@@ -450,6 +481,27 @@ def prepare_simulation():
                 "success": False,
                 "error": t('api.simulationNotFound', id=simulation_id)
             }), 404
+
+        # Reopening or reloading the Step 2 page must attach to the running
+        # preparation instead of generating every profile again in parallel.
+        active_task_id = _active_prepare_task_id(simulation_id)
+        if active_task_id:
+            logger.info(
+                "Reusing in-flight prepare task %s for %s", active_task_id, simulation_id
+            )
+            return jsonify({
+                "success": True,
+                "data": {
+                    "simulation_id": simulation_id,
+                    "task_id": active_task_id,
+                    "status": "preparing",
+                    "message": t('api.prepareStarted'),
+                    "already_prepared": False,
+                    "reused": True,
+                    "expected_entities_count": state.entities_count,
+                    "entity_types": state.entity_types,
+                }
+            })
         
         # 检查是否强制重新生成
         force_regenerate = data.get('force_regenerate', False)
