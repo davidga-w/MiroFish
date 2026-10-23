@@ -43,6 +43,8 @@ class Config:
     
     # OASIS模拟配置
     OASIS_DEFAULT_MAX_ROUNDS = int(os.environ.get('OASIS_DEFAULT_MAX_ROUNDS', '10'))
+    # 模拟Agent使用的模型（可选，未设置时使用 LLM_MODEL_NAME）
+    SIMULATION_AGENT_MODEL_NAME = os.environ.get('SIMULATION_AGENT_MODEL_NAME') or LLM_MODEL_NAME
     OASIS_SIMULATION_DATA_DIR = os.path.join(os.path.dirname(__file__), '../uploads/simulations')
     
     # OASIS平台可用动作配置
@@ -59,6 +61,8 @@ class Config:
     REPORT_AGENT_MAX_TOOL_CALLS = int(os.environ.get('REPORT_AGENT_MAX_TOOL_CALLS', '5'))
     REPORT_AGENT_MAX_REFLECTION_ROUNDS = int(os.environ.get('REPORT_AGENT_MAX_REFLECTION_ROUNDS', '2'))
     REPORT_AGENT_TEMPERATURE = float(os.environ.get('REPORT_AGENT_TEMPERATURE', '0.5'))
+    # Report Agent使用的模型（可选，未设置时使用 LLM_MODEL_NAME）
+    REPORT_AGENT_MODEL_NAME = os.environ.get('REPORT_AGENT_MODEL_NAME') or LLM_MODEL_NAME
     
     @classmethod
     def validate(cls) -> list[str]:

@@ -688,9 +688,30 @@ watch(() => props.systemLogs?.length, () => {
   })
 })
 
-onMounted(() => {
+// 页面重新加载时接入仍在进行的模拟，而不是用 force 重启覆盖已有进度
+const attachToActiveRun = async () => {
+  try {
+    const res = await getRunStatus(props.simulationId)
+    const data = res.success ? res.data : null
+    if (!data || !['starting', 'running', 'paused', 'stopping'].includes(data.runner_status)) {
+      return false
+    }
+    addLog(t('log.attachedToRunningSim'))
+    runStatus.value = data
+    phase.value = 1
+    emit('update-status', 'processing')
+    startStatusPolling()
+    startDetailPolling()
+    return true
+  } catch (err) {
+    console.warn('获取运行状态失败:', err)
+    return false
+  }
+}
+
+onMounted(async () => {
   addLog(t('log.step3Init'))
-  if (props.simulationId) {
+  if (props.simulationId && !(await attachToActiveRun())) {
     doStartSimulation()
   }
 })

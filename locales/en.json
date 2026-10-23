@@ -525,6 +525,7 @@
     "loadConfigFailed": "Failed to load config: {error}",
     "step2Init": "Step 2 environment setup initialized",
     "step3Init": "Step 3 simulation run initialized",
+    "attachedToRunningSim": "Simulation already in progress, showing live status",
     "startingDualSim": "Starting dual-platform parallel simulation...",
     "setMaxRounds": "Max simulation rounds set to: {rounds}",
     "graphMemoryUpdateEnabled": "Dynamic graph memory update enabled",

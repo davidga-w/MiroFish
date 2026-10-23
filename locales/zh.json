@@ -525,6 +525,7 @@
     "loadConfigFailed": "加载配置失败: {error}",
     "step2Init": "Step2 环境搭建初始化",
     "step3Init": "Step3 模拟运行初始化",
+    "attachedToRunningSim": "模拟正在进行中，已接入实时状态",
     "startingDualSim": "正在启动双平台并行模拟...",
     "setMaxRounds": "设置最大模拟轮数: {rounds}",
     "graphMemoryUpdateEnabled": "已开启动态图谱更新模式",
