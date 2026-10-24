@@ -40,6 +40,8 @@ def _run_is_reportable(run_state, accept_incomplete_graph: bool) -> bool:
         accept_incomplete_graph
         and run_state.runner_status == RunnerStatus.FAILED
         and SimulationRunner._check_all_platforms_completed(run_state)
+        # simulation_end also closes a run the script ended early (spending cap)
+        and not run_state.stop_reason
     )
 
 

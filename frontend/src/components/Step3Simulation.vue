@@ -327,6 +327,9 @@ const startError = ref(null)
 const runStatus = ref({})
 const allActions = ref([]) // 所有动作（增量累积）
 const actionIds = ref(new Set()) // 用于去重的动作ID集合
+// Server-issued position in the action logs: each detail poll downloads only newer actions
+let actionsCursor = ''
+let detailRequestInFlight = false
 const scrollContainer = ref(null)
 
 // Computed
@@ -374,6 +377,7 @@ const resetAllState = () => {
   runStatus.value = {}
   allActions.value = []
   actionIds.value = new Set()
+  actionsCursor = ''
   prevTwitterRound.value = 0
   prevRedditRound.value = 0
   startError.value = null
@@ -526,7 +530,8 @@ const fetchRunStatus = async () => {
         stopPolling()
         emit('update-status', 'error')
       } else if (isCompleted) {
-        addLog(t('log.simCompleted'))
+        // A run the script ended early (e.g. the spending cap) says so instead of "completed"
+        addLog(data.error || t('log.simCompleted'))
         phase.value = 2
         stopPolling()
         emit('update-status', 'completed')
@@ -562,14 +567,22 @@ const checkPlatformsCompleted = (data) => {
 }
 
 const fetchRunStatusDetail = async () => {
-  if (!props.simulationId) return
+  // Skip a tick while the previous poll is still downloading
+  if (!props.simulationId || detailRequestInFlight) return
+  detailRequestInFlight = true
   
   try {
-    const res = await getRunStatusDetail(props.simulationId)
+    const res = await getRunStatusDetail(props.simulationId, actionsCursor)
     
     if (res.success && res.data) {
-      // 使用 all_actions 获取完整的动作列表
-      const serverActions = res.data.all_actions || []
+      // The run was restarted or its logs recreated: start the timeline over
+      if (res.data.reset) {
+        allActions.value = []
+        actionIds.value = new Set()
+      }
+      actionsCursor = res.data.cursor || ''
+      // 只包含上次轮询之后新增的动作（按时间先后）
+      const serverActions = res.data.actions || []
       
       // 增量添加新动作（去重）
       let newActionsAdded = 0
@@ -592,6 +605,8 @@ const fetchRunStatusDetail = async () => {
     }
   } catch (err) {
     console.warn('获取详细状态失败:', err)
+  } finally {
+    detailRequestInFlight = false
   }
 }
 
@@ -705,7 +720,7 @@ const attachToActiveRun = async () => {
     const status = data?.runner_status
     if (['completed', 'stopped', 'failed'].includes(status) && !window.confirm(t('log.confirmRestartFinishedSim'))) {
       // 保留已结束的模拟结果，可直接生成报告
-      addLog(status === 'failed' ? t('log.simFailed') : t('log.simCompleted'))
+      addLog(status === 'failed' ? t('log.simFailed') : (data.error || t('log.simCompleted')))
       runStatus.value = data
       phase.value = 2
       emit('update-status', status === 'failed' ? 'error' : 'completed')

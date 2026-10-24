@@ -21,6 +21,7 @@ from queue import Queue
 from ..config import Config
 from ..utils.logger import get_logger
 from ..utils.locale import get_locale, set_locale
+from ..utils.path_safety import is_safe_id, safe_child_path
 from ..utils.zep import (
     ZEP_HTTP_REQUEST_TIMEOUT_SECONDS,
     ZEP_INGESTION_WAIT_TIMEOUT_SECONDS,
@@ -148,6 +149,9 @@ class SimulationRunState:
     
     # 错误信息
     error: Optional[str] = None
+
+    # Why the simulation script ended its rounds early (e.g. "budget"); None for a full run
+    stop_reason: Optional[str] = None
     
     # 进程ID（用于停止）
     process_pid: Optional[int] = None
@@ -190,6 +194,7 @@ class SimulationRunState:
             "updated_at": self.updated_at,
             "completed_at": self.completed_at,
             "error": self.error,
+            "stop_reason": self.stop_reason,
             "process_pid": self.process_pid,
         }
     
@@ -246,6 +251,11 @@ class SimulationRunner:
             )
 
     @classmethod
+    def _sim_dir(cls, simulation_id: str) -> str:
+        """Run directory of a simulation; refuses IDs that could escape RUN_STATE_DIR."""
+        return safe_child_path(cls.RUN_STATE_DIR, simulation_id)
+
+    @classmethod
     def _sync_simulation_status(
         cls,
         simulation_id: str,
@@ -300,7 +310,9 @@ class SimulationRunner:
     @classmethod
     def _load_run_state(cls, simulation_id: str) -> Optional[SimulationRunState]:
         """从文件加载运行状态"""
-        state_file = os.path.join(cls.RUN_STATE_DIR, simulation_id, "run_state.json")
+        if not is_safe_id(simulation_id):
+            return None
+        state_file = os.path.join(cls._sim_dir(simulation_id), "run_state.json")
         if not os.path.exists(state_file):
             return None
         
@@ -330,6 +342,7 @@ class SimulationRunner:
                 updated_at=data.get("updated_at", datetime.now().isoformat()),
                 completed_at=data.get("completed_at"),
                 error=data.get("error"),
+                stop_reason=data.get("stop_reason"),
                 process_pid=data.get("process_pid"),
             )
             
@@ -356,7 +369,7 @@ class SimulationRunner:
     @classmethod
     def _save_run_state(cls, state: SimulationRunState):
         """保存运行状态到文件"""
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, state.simulation_id)
+        sim_dir = cls._sim_dir(state.simulation_id)
         os.makedirs(sim_dir, exist_ok=True)
         state_file = os.path.join(sim_dir, "run_state.json")
         
@@ -390,7 +403,7 @@ class SimulationRunner:
             SimulationRunState
         """
         # 加载模拟配置
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._sim_dir(simulation_id)
         config_path = os.path.join(sim_dir, "simulation_config.json")
         
         if not os.path.exists(config_path):
@@ -622,7 +635,7 @@ class SimulationRunner:
     def _monitor_simulation(cls, simulation_id: str, locale: str = 'zh'):
         """监控模拟进程，解析动作日志"""
         set_locale(locale)
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._sim_dir(simulation_id)
         
         # 新的日志结构：分平台的动作日志
         twitter_actions_log = os.path.join(sim_dir, "twitter", "actions.jsonl")
@@ -704,6 +717,26 @@ class SimulationRunner:
                             pass
                         error_message = (
                             f"进程退出码: {exit_code}, 错误: {error_info}"
+                        )
+                    elif not manual_stop and not cls._check_all_platforms_completed(state):
+                        # A clean exit without every platform's simulation_end is
+                        # an aborted run, never a completed one.
+                        desired_status = RunnerStatus.FAILED
+                        error_message = (
+                            "Simulation process exited at round "
+                            f"{state.current_round}/{state.total_rounds} "
+                            "before every platform finished"
+                        )
+                    elif not manual_stop and state.stop_reason:
+                        # The script ended its rounds early: the partial result
+                        # is a stop, not a completion.
+                        reason = {"budget": "LLM spending limit reached"}.get(
+                            state.stop_reason, state.stop_reason
+                        )
+                        desired_status = RunnerStatus.STOPPED
+                        error_message = (
+                            f"Stopped early at round {state.current_round}/"
+                            f"{state.total_rounds}: {reason}"
                         )
 
                     state.twitter_running = False
@@ -806,6 +839,9 @@ class SimulationRunner:
                                 
                                 # 检测 simulation_end 事件，标记平台已完成
                                 if event_type == "simulation_end":
+                                    if action_data.get("stop_reason"):
+                                        # Ended before its last round (e.g. the spending cap)
+                                        state.stop_reason = action_data["stop_reason"]
                                     if platform == "twitter":
                                         state.twitter_completed = True
                                         state.twitter_running = False
@@ -890,7 +926,7 @@ class SimulationRunner:
         Returns:
             True 如果所有启用的平台都已完成
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, state.simulation_id)
+        sim_dir = cls._sim_dir(state.simulation_id)
         twitter_log = os.path.join(sim_dir, "twitter", "actions.jsonl")
         reddit_log = os.path.join(sim_dir, "reddit", "actions.jsonl")
         
@@ -1137,23 +1173,117 @@ class SimulationRunner:
                     if round_num is not None and data.get("round") != round_num:
                         continue
                     
-                    actions.append(AgentAction(
-                        round_num=data.get("round", 0),
-                        timestamp=data.get("timestamp", ""),
-                        platform=record_platform,
-                        agent_id=data.get("agent_id", 0),
-                        agent_name=data.get("agent_name", ""),
-                        action_type=data.get("action_type", ""),
-                        action_args=data.get("action_args", {}),
-                        result=data.get("result"),
-                        success=data.get("success", True),
-                    ))
+                    actions.append(cls._record_to_action(data, record_platform))
                     
                 except json.JSONDecodeError:
                     continue
         
         return actions
     
+    @staticmethod
+    def _record_to_action(data: Dict[str, Any], platform: str) -> AgentAction:
+        """AgentAction from one agent record of an actions.jsonl log."""
+        return AgentAction(
+            round_num=data.get("round", 0),
+            timestamp=data.get("timestamp", ""),
+            platform=platform,
+            agent_id=data.get("agent_id", 0),
+            agent_name=data.get("agent_name", ""),
+            action_type=data.get("action_type", ""),
+            action_args=data.get("action_args", {}),
+            result=data.get("result"),
+            success=data.get("success", True),
+        )
+
+    @staticmethod
+    def parse_actions_cursor(cursor: str) -> tuple[str, Dict[str, int]]:
+        """
+        (run start time, byte offset per action log) from a read_new_actions()
+        cursor; "" means from the start. Raises ValueError for a malformed cursor.
+        """
+        run_started_at, _, positions = cursor.rpartition("|")
+        offsets: Dict[str, int] = {}
+        for part in filter(None, positions.split(",")):
+            log_name, _, offset = part.partition(":")
+            offsets[log_name] = int(offset)
+            if offsets[log_name] < 0:
+                raise ValueError(f"Negative offset in cursor: {part}")
+        return run_started_at, offsets
+
+    @staticmethod
+    def _read_complete_lines(path: str, offset: int) -> tuple:
+        """
+        Complete lines of `path` after byte `offset`, plus the offset after them.
+        A partially written last line is left for the next read. Returns
+        (None, 0) when `offset` is no longer a line boundary of the file (it was
+        truncated or recreated since the offset was handed out).
+        """
+        if not os.path.exists(path):
+            return ([], 0) if offset == 0 else (None, 0)
+        with open(path, "rb") as f:
+            if offset:
+                f.seek(offset - 1)
+                if f.read(1) != b"\n":
+                    return None, 0
+            chunk = f.read()
+        end = chunk.rfind(b"\n") + 1
+        return chunk[:end].splitlines(), offset + end
+
+    @classmethod
+    def read_new_actions(
+        cls, simulation_id: str, position: tuple[str, Dict[str, int]]
+    ) -> tuple[List[AgentAction], str, bool]:
+        """
+        Agent actions appended to the action logs since `position`, oldest first.
+
+        Lets pollers download each action once instead of the whole history on
+        every poll. `position` is parse_actions_cursor() of the cursor the last
+        call returned. Returns (actions, cursor, reset). reset=True means the run
+        was restarted or a log recreated since that cursor: the actions start
+        over from the beginning and the caller must drop the ones it has.
+        """
+        cursor_run, offsets = position
+        state = cls.get_run_state(simulation_id)
+        current_run = (state.started_at or "") if state else ""
+        restarted = bool(cursor_run or offsets) and cursor_run != current_run
+
+        sim_dir = cls._sim_dir(simulation_id)
+        logs = {
+            platform: os.path.join(sim_dir, platform, "actions.jsonl")
+            for platform in ("twitter", "reddit")
+        }
+        legacy_log = os.path.join(sim_dir, "actions.jsonl")
+        if not any(map(os.path.exists, logs.values())) and os.path.exists(legacy_log):
+            logs = {"legacy": legacy_log}  # older runs wrote one combined log
+
+        reset = restarted
+        reads = {
+            name: cls._read_complete_lines(path, 0 if restarted else offsets.get(name, 0))
+            for name, path in logs.items()
+        }
+        if any(lines is None for lines, _ in reads.values()):
+            reset = True
+            reads = {name: cls._read_complete_lines(path, 0) for name, path in logs.items()}
+
+        actions: List[AgentAction] = []
+        for name, (lines, _) in reads.items():
+            default_platform = None if name == "legacy" else name
+            for line in lines:
+                try:
+                    data = json.loads(line)
+                except ValueError:
+                    continue
+                # Skip events (round_start, simulation_end, ...) and non-agent rows
+                if not isinstance(data, dict) or "event_type" in data or "agent_id" not in data:
+                    continue
+                platform = data.get("platform") or default_platform or ""
+                actions.append(cls._record_to_action(data, platform))
+        actions.sort(key=lambda action: action.timestamp)
+        cursor = current_run + "|" + ",".join(
+            f"{name}:{end}" for name, (_, end) in reads.items()
+        )
+        return actions, cursor, reset
+
     @classmethod
     def get_all_actions(
         cls,
@@ -1174,7 +1304,7 @@ class SimulationRunner:
         Returns:
             完整的动作列表（按时间戳排序，新的在前）
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._sim_dir(simulation_id)
         actions = []
         
         # 读取 Twitter 动作文件（根据文件路径自动设置 platform 为 twitter）
@@ -1388,7 +1518,7 @@ class SimulationRunner:
         """
         import shutil
         
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._sim_dir(simulation_id)
         
         if not os.path.exists(sim_dir):
             return {"success": True, "message": "模拟目录不存在，无需清理"}
@@ -1631,7 +1761,7 @@ class SimulationRunner:
         获取所有正在运行的模拟ID列表
         """
         running = []
-        for sim_id, process in cls._processes.items():
+        for sim_id, process in list(cls._processes.items()):
             if process.poll() is None:
                 running.append(sim_id)
         return running
@@ -1649,7 +1779,7 @@ class SimulationRunner:
         Returns:
             True 表示环境存活，False 表示环境已关闭
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._sim_dir(simulation_id)
         if not os.path.exists(sim_dir):
             return False
 
@@ -1667,7 +1797,7 @@ class SimulationRunner:
         Returns:
             状态详情字典，包含 status, twitter_available, reddit_available, timestamp
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._sim_dir(simulation_id)
         status_file = os.path.join(sim_dir, "env_status.json")
         
         default_status = {
@@ -1721,7 +1851,7 @@ class SimulationRunner:
             ValueError: 模拟不存在或环境未运行
             TimeoutError: 等待响应超时
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._sim_dir(simulation_id)
         if not os.path.exists(sim_dir):
             raise ValueError(f"模拟不存在: {simulation_id}")
 
@@ -1783,7 +1913,7 @@ class SimulationRunner:
             ValueError: 模拟不存在或环境未运行
             TimeoutError: 等待响应超时
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._sim_dir(simulation_id)
         if not os.path.exists(sim_dir):
             raise ValueError(f"模拟不存在: {simulation_id}")
 
@@ -1840,7 +1970,7 @@ class SimulationRunner:
         Returns:
             全局采访结果字典
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._sim_dir(simulation_id)
         if not os.path.exists(sim_dir):
             raise ValueError(f"模拟不存在: {simulation_id}")
 
@@ -1893,7 +2023,7 @@ class SimulationRunner:
         Returns:
             操作结果字典
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._sim_dir(simulation_id)
         if not os.path.exists(sim_dir):
             raise ValueError(f"模拟不存在: {simulation_id}")
         
@@ -2004,7 +2134,7 @@ class SimulationRunner:
         Returns:
             Interview历史记录列表
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._sim_dir(simulation_id)
         
         results = []
         

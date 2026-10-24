@@ -18,6 +18,7 @@ from .zep_entity_reader import ZepEntityReader, FilteredEntities
 from .oasis_profile_generator import OasisProfileGenerator, OasisAgentProfile
 from .simulation_config_generator import SimulationConfigGenerator, SimulationParameters
 from ..utils.locale import t
+from ..utils.path_safety import is_safe_id, safe_child_path
 
 logger = get_logger('mirofish.simulation')
 
@@ -151,7 +152,7 @@ class SimulationManager:
     
     def _get_simulation_dir(self, simulation_id: str) -> str:
         """获取模拟数据目录"""
-        sim_dir = os.path.join(self.SIMULATION_DATA_DIR, simulation_id)
+        sim_dir = safe_child_path(self.SIMULATION_DATA_DIR, simulation_id)
         os.makedirs(sim_dir, exist_ok=True)
         return sim_dir
     
@@ -169,6 +170,8 @@ class SimulationManager:
     
     def _load_simulation_state(self, simulation_id: str) -> Optional[SimulationState]:
         """从文件加载模拟状态"""
+        if not is_safe_id(simulation_id):
+            return None
         if simulation_id in self._simulations:
             return self._simulations[simulation_id]
         

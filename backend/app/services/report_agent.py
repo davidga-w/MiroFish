@@ -22,6 +22,7 @@ from ..config import Config
 from ..utils.llm_client import LLMClient
 from ..utils.llm_spend import reraise_if_budget_exceeded
 from ..utils.logger import get_logger
+from ..utils.path_safety import is_safe_id, safe_child_path
 from ..utils.locale import get_language_instruction, t
 from .zep_tools import (
     ZepToolsService, 
@@ -51,7 +52,8 @@ class ReportLogger:
         """
         self.report_id = report_id
         self.log_file_path = os.path.join(
-            Config.UPLOAD_FOLDER, 'reports', report_id, 'agent_log.jsonl'
+            safe_child_path(os.path.join(Config.UPLOAD_FOLDER, 'reports'), report_id),
+            'agent_log.jsonl',
         )
         self.start_time = datetime.now()
         self._ensure_log_file()
@@ -322,7 +324,8 @@ class ReportConsoleLogger:
         """
         self.report_id = report_id
         self.log_file_path = os.path.join(
-            Config.UPLOAD_FOLDER, 'reports', report_id, 'console_log.txt'
+            safe_child_path(os.path.join(Config.UPLOAD_FOLDER, 'reports'), report_id),
+            'console_log.txt',
         )
         self._ensure_log_file()
         self._file_handler = None
@@ -1960,7 +1963,7 @@ class ReportManager:
     @classmethod
     def _get_report_folder(cls, report_id: str) -> str:
         """获取报告文件夹路径"""
-        return os.path.join(cls.REPORTS_DIR, report_id)
+        return safe_child_path(cls.REPORTS_DIR, report_id)
     
     @classmethod
     def _ensure_report_folder(cls, report_id: str) -> str:
@@ -2496,6 +2499,8 @@ class ReportManager:
     @classmethod
     def get_report(cls, report_id: str) -> Optional[Report]:
         """获取报告"""
+        if not is_safe_id(report_id):
+            return None
         path = cls._get_report_path(report_id)
         
         if not os.path.exists(path):

@@ -22,6 +22,7 @@ from ..services.simulation_runner import (
 from ..services.zep_graph_memory_updater import ZepGraphMemoryManager
 from ..utils.logger import get_logger
 from ..utils.locale import t, get_locale, set_locale
+from ..utils.path_safety import safe_child_path
 from ..utils.llm_spend import budget_status, set_spend_scope
 from ..utils.zep_lifecycle import get_graph_readers, graph_lifecycle_lock
 from ..models.project import ProjectManager
@@ -307,7 +308,7 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
     import os
     from ..config import Config
     
-    simulation_dir = os.path.join(Config.OASIS_SIMULATION_DATA_DIR, simulation_id)
+    simulation_dir = safe_child_path(Config.OASIS_SIMULATION_DATA_DIR, simulation_id)
     
     # 检查目录是否存在
     if not os.path.exists(simulation_dir):
@@ -1151,7 +1152,7 @@ def get_simulation_profiles_realtime(simulation_id: str):
         platform = request.args.get('platform') or _get_default_platform(simulation_id)
 
         # 获取模拟目录
-        sim_dir = os.path.join(Config.OASIS_SIMULATION_DATA_DIR, simulation_id)
+        sim_dir = safe_child_path(Config.OASIS_SIMULATION_DATA_DIR, simulation_id)
         
         if not os.path.exists(sim_dir):
             return jsonify({
@@ -1259,7 +1260,7 @@ def get_simulation_config_realtime(simulation_id: str):
     
     try:
         # 获取模拟目录
-        sim_dir = os.path.join(Config.OASIS_SIMULATION_DATA_DIR, simulation_id)
+        sim_dir = safe_child_path(Config.OASIS_SIMULATION_DATA_DIR, simulation_id)
         
         if not os.path.exists(sim_dir):
             return jsonify({
@@ -1996,6 +1997,9 @@ def get_run_status_detail(simulation_id: str):
     
     Query参数：
         platform: 过滤平台（twitter/reddit，可选）
+        cursor: 增量模式（可选，轮询用）。首次传空字符串，之后传上次响应的 data.cursor；
+                只返回其后新增的动作 data.actions（按时间先后），不再返回下面的全量列表。
+                data.reset=true 表示动作日志已重建（强制重启），需丢弃已有动作
     
     返回：
         {
@@ -2027,6 +2031,26 @@ def get_run_status_detail(simulation_id: str):
     try:
         run_state = SimulationRunner.get_run_state(simulation_id)
         platform_filter = request.args.get('platform')
+
+        if 'cursor' in request.args:
+            # Incremental mode for pollers: only the actions appended since the
+            # caller's cursor, each sent once. (The full mode below re-reads and
+            # re-sends the whole history three times on every call.)
+            try:
+                position = SimulationRunner.parse_actions_cursor(request.args['cursor'])
+            except ValueError:
+                return jsonify({"success": False, "error": "Invalid cursor"}), 400
+            actions, cursor, reset = SimulationRunner.read_new_actions(simulation_id, position)
+            result = run_state.to_dict() if run_state else {
+                "simulation_id": simulation_id,
+                "runner_status": "idle",
+            }
+            result.update(
+                actions=[a.to_dict() for a in actions],
+                cursor=cursor,
+                reset=reset,
+            )
+            return jsonify({"success": True, "data": result})
         
         if not run_state:
             return jsonify({
@@ -2228,10 +2252,13 @@ def get_simulation_posts(simulation_id: str):
         limit = request.args.get('limit', 50, type=int)
         offset = request.args.get('offset', 0, type=int)
 
-        sim_dir = os.path.join(
-            os.path.dirname(__file__),
-            f'../../uploads/simulations/{simulation_id}'
-        )
+        if platform not in ("twitter", "reddit"):
+            return jsonify({
+                "success": False,
+                "error": "platform must be 'twitter' or 'reddit'"
+            }), 400
+
+        sim_dir = safe_child_path(Config.OASIS_SIMULATION_DATA_DIR, simulation_id)
 
         db_file = f"{platform}_simulation.db"
         db_path = os.path.join(sim_dir, db_file)
@@ -2306,10 +2333,13 @@ def get_simulation_comments(simulation_id: str):
         limit = request.args.get('limit', 50, type=int)
         offset = request.args.get('offset', 0, type=int)
 
-        sim_dir = os.path.join(
-            os.path.dirname(__file__),
-            f'../../uploads/simulations/{simulation_id}'
-        )
+        if platform not in ("twitter", "reddit"):
+            return jsonify({
+                "success": False,
+                "error": "platform must be 'twitter' or 'reddit'"
+            }), 400
+
+        sim_dir = safe_child_path(Config.OASIS_SIMULATION_DATA_DIR, simulation_id)
         
         db_path = os.path.join(sim_dir, f"{platform}_simulation.db")
         

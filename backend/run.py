@@ -42,7 +42,13 @@ def main():
     debug = Config.DEBUG
     
     # 启动服务
-    app.run(host=host, port=port, debug=debug, threaded=True)
+    run_options = {}
+    if debug:
+        # Saving a .py file restarts the server, which stops running simulations
+        # and background tasks; defer that restart until they have finished.
+        from app.utils.dev_reloader import install_deferred_reloader
+        run_options['reloader_type'] = install_deferred_reloader()
+    app.run(host=host, port=port, debug=debug, threaded=True, **run_options)
 
 
 if __name__ == '__main__':

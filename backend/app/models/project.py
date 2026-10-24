@@ -12,6 +12,7 @@ from typing import Dict, Any, List, Optional
 from enum import Enum
 from dataclasses import dataclass, field, asdict
 from ..config import Config
+from ..utils.path_safety import is_safe_id, safe_child_path
 
 
 class ProjectStatus(str, Enum):
@@ -118,7 +119,7 @@ class ProjectManager:
     @classmethod
     def _get_project_dir(cls, project_id: str) -> str:
         """获取项目目录路径"""
-        return os.path.join(cls.PROJECTS_DIR, project_id)
+        return safe_child_path(cls.PROJECTS_DIR, project_id)
     
     @classmethod
     def _get_project_meta_path(cls, project_id: str) -> str:
@@ -190,6 +191,8 @@ class ProjectManager:
         Returns:
             Project对象，如果不存在返回None
         """
+        if not is_safe_id(project_id):
+            return None
         meta_path = cls._get_project_meta_path(project_id)
         
         if not os.path.exists(meta_path):

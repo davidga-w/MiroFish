@@ -9,11 +9,12 @@ import warnings
 # 需要在所有其他导入之前设置
 warnings.filterwarnings("ignore", message=".*resource_tracker.*")
 
-from flask import Flask, request
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 from .config import Config
 from .utils.logger import setup_logger, get_logger
+from .utils.path_safety import PATH_ID_FIELDS, is_safe_id
 
 
 def create_app(config_class=Config):
@@ -48,6 +49,18 @@ def create_app(config_class=Config):
     if should_log_startup:
         logger.info("已注册模拟进程清理函数")
     
+    # Refuse IDs that could escape their storage directory (e.g. "..") before
+    # any route joins them onto a path under uploads/.
+    @app.before_request
+    def reject_unsafe_ids():
+        body = request.get_json(silent=True) if request.is_json else None
+        sources = (request.view_args or {}, request.args, body if isinstance(body, dict) else {})
+        for source in sources:
+            for field in PATH_ID_FIELDS:
+                value = source.get(field)
+                if value not in (None, "") and not is_safe_id(value):
+                    return jsonify({"success": False, "error": f"Invalid {field}"}), 400
+
     # 请求日志中间件
     @app.before_request
     def log_request():

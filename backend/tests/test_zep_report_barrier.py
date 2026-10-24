@@ -184,7 +184,8 @@ def _failed_run(monkeypatch, *, rounds_finished):
         "get_run_state",
         classmethod(
             lambda _cls, _simulation_id: SimpleNamespace(
-                runner_status=RunnerStatus.FAILED
+                runner_status=RunnerStatus.FAILED,
+                stop_reason=None,
             )
         ),
     )

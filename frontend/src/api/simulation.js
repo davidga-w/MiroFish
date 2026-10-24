@@ -105,9 +105,12 @@ export const getRunStatus = (simulationId) => {
 /**
  * 获取模拟运行详细状态（包含最近动作）
  * @param {string} simulationId
+ * @param {string} [cursor] - 增量模式：首次传 ''，之后传上次响应的 data.cursor，
+ *   只返回其后新增的动作 data.actions（data.reset=true 时需丢弃已有动作）
  */
-export const getRunStatusDetail = (simulationId) => {
-  return service.get(`/api/simulation/${simulationId}/run-status/detail`)
+export const getRunStatusDetail = (simulationId, cursor) => {
+  const params = cursor === undefined ? {} : { cursor }
+  return service.get(`/api/simulation/${simulationId}/run-status/detail`, { params })
 }
 
 /**
