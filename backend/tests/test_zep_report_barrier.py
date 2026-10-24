@@ -146,6 +146,108 @@ def test_failed_ingestion_cannot_generate_a_report_after_restart(monkeypatch):
     assert "successfully completed" in body["error"]
 
 
+def _failed_run(monkeypatch, *, rounds_finished):
+    simulation = SimpleNamespace(project_id="proj-1", graph_id="graph-1")
+    project = SimpleNamespace(
+        project_id="proj-1",
+        graph_id="graph-1",
+        status=ProjectStatus.GRAPH_COMPLETED,
+        simulation_requirement="mock requirement",
+    )
+    started = []
+
+    class Tasks:
+        def create_task(self, **_kwargs):
+            return "task-1"
+
+    class ParkedThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+
+        def start(self):
+            started.append(self.target)
+
+    monkeypatch.setattr(
+        report_api,
+        "SimulationManager",
+        lambda: SimpleNamespace(
+            get_simulation=lambda _simulation_id: simulation
+        ),
+    )
+    monkeypatch.setattr(
+        report_api.ProjectManager,
+        "get_project",
+        classmethod(lambda _cls, _project_id: project),
+    )
+    monkeypatch.setattr(
+        report_api.SimulationRunner,
+        "get_run_state",
+        classmethod(
+            lambda _cls, _simulation_id: SimpleNamespace(
+                runner_status=RunnerStatus.FAILED
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        report_api.SimulationRunner,
+        "_check_all_platforms_completed",
+        classmethod(lambda _cls, _state: rounds_finished),
+    )
+    monkeypatch.setattr(
+        report_api.ZepGraphMemoryManager,
+        "get_updater",
+        classmethod(lambda _cls, _simulation_id: None),
+    )
+    monkeypatch.setattr(
+        report_api.ReportManager,
+        "get_report_by_simulation",
+        classmethod(lambda _cls, _simulation_id: None),
+    )
+    monkeypatch.setattr(report_api, "TaskManager", Tasks)
+    monkeypatch.setattr(report_api.threading, "Thread", ParkedThread)
+    return started
+
+
+def _generate(payload):
+    app = Flask(__name__)
+    with app.test_request_context(
+        "/api/report/generate", method="POST", json=payload
+    ):
+        return _json_result(report_api.generate_report())
+
+
+def test_finished_run_with_incomplete_graph_reports_only_when_accepted(monkeypatch):
+    started = _failed_run(monkeypatch, rounds_finished=True)
+
+    body, status = _generate({"simulation_id": "sim-1"})
+    assert status == 409
+    assert started == []
+
+    report_id = None
+    try:
+        body, status = _generate(
+            {"simulation_id": "sim-1", "accept_incomplete_graph": True}
+        )
+        assert status == 200
+        report_id = body["data"]["report_id"]
+        assert len(started) == 1
+    finally:
+        if report_id:
+            unregister_graph_reader("graph-1", report_id)
+
+
+def test_accepting_an_incomplete_graph_still_requires_finished_rounds(monkeypatch):
+    started = _failed_run(monkeypatch, rounds_finished=False)
+
+    body, status = _generate(
+        {"simulation_id": "sim-1", "accept_incomplete_graph": True}
+    )
+
+    assert status == 409
+    assert "successfully completed" in body["error"]
+    assert started == []
+
+
 def test_report_reader_lease_blocks_graph_start_and_delete(monkeypatch):
     simulation = SimpleNamespace(
         simulation_id="sim-1",

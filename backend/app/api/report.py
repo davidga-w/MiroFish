@@ -28,6 +28,32 @@ from ..utils.zep_lifecycle import (
 logger = get_logger('mirofish.api.report')
 
 
+def _run_is_reportable(run_state, accept_incomplete_graph: bool) -> bool:
+    """Completed or stopped runs can be reported. With accept_incomplete_graph the
+    caller also accepts a failed run whose platforms all finished their rounds,
+    e.g. one where some activity never reached the Zep graph."""
+    if run_state is None:
+        return False
+    if run_state.runner_status in (RunnerStatus.COMPLETED, RunnerStatus.STOPPED):
+        return True
+    return (
+        accept_incomplete_graph
+        and run_state.runner_status == RunnerStatus.FAILED
+        and SimulationRunner._check_all_platforms_completed(run_state)
+    )
+
+
+def _not_reportable_response():
+    return jsonify({
+        "success": False,
+        "error": (
+            "A successfully completed or stopped simulation is required before "
+            "generating a report. A failed run that finished all its rounds can "
+            "be reported with accept_incomplete_graph=true."
+        ),
+    }), 409
+
+
 # ============== 报告生成接口 ==============
 
 @report_bp.route('/generate', methods=['POST'])
@@ -41,7 +67,8 @@ def generate_report():
     请求（JSON）：
         {
             "simulation_id": "sim_xxxx",    // 必填，模拟ID
-            "force_regenerate": false        // 可选，强制重新生成
+            "force_regenerate": false,       // 可选，强制重新生成
+            "accept_incomplete_graph": false // 可选，允许已跑完全部轮次但图谱写入不完整（标记为失败）的模拟生成报告
         }
     
     返回：
@@ -70,6 +97,13 @@ def generate_report():
             return jsonify({
                 "success": False,
                 "error": "force_regenerate must be a JSON boolean",
+            }), 400
+
+        accept_incomplete_graph = data.get('accept_incomplete_graph', False)
+        if not isinstance(accept_incomplete_graph, bool):
+            return jsonify({
+                "success": False,
+                "error": "accept_incomplete_graph must be a JSON boolean",
             }), 400
         
         # 获取模拟信息
@@ -101,21 +135,8 @@ def generate_report():
                 ),
                 "ingestion_pending": updater is not None,
             }), 409
-        successful_terminal_statuses = {
-            RunnerStatus.COMPLETED,
-            RunnerStatus.STOPPED,
-        }
-        if (
-            run_state is None
-            or run_state.runner_status not in successful_terminal_statuses
-        ):
-            return jsonify({
-                "success": False,
-                "error": (
-                    "A successfully completed or stopped simulation is required "
-                    "before generating a report"
-                ),
-            }), 409
+        if not _run_is_reportable(run_state, accept_incomplete_graph):
+            return _not_reportable_response()
 
         # 获取项目信息
         project = ProjectManager.get_project(state.project_id)
@@ -196,18 +217,8 @@ def generate_report():
                     ),
                     "ingestion_pending": refreshed_updater is not None,
                 }), 409
-            if (
-                refreshed_run_state is None
-                or refreshed_run_state.runner_status
-                not in successful_terminal_statuses
-            ):
-                return jsonify({
-                    "success": False,
-                    "error": (
-                        "A successfully completed or stopped simulation is "
-                        "required before generating a report"
-                    ),
-                }), 409
+            if not _run_is_reportable(refreshed_run_state, accept_incomplete_graph):
+                return _not_reportable_response()
 
             # Cached-report reuse is now part of the same atomic barrier, so a
             # concurrent rerun cannot make the returned report stale between
