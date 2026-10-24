@@ -528,6 +528,7 @@
     "attachedToRunningSim": "Simulation already in progress, showing live status",
     "runStatusCheckFailed": "Could not check whether this simulation is already running ({error}), so it was not restarted. Reload the page to retry.",
     "confirmRestartFinishedSim": "This simulation has already finished. Start it over? That deletes the finished run.",
+    "llmBudgetReached": "Spend limit hit, no more LLM calls for this run. {reason}",
     "startingDualSim": "Starting dual-platform parallel simulation...",
     "setMaxRounds": "Max simulation rounds set to: {rounds}",
     "graphMemoryUpdateEnabled": "Dynamic graph memory update enabled",

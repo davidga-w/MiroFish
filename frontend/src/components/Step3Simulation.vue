@@ -103,6 +103,8 @@
       </div>
     </div>
 
+    <LlmSpendMeter v-if="runStatus.llm_spend" :spend="runStatus.llm_spend" />
+
     <!-- Main Content: Dual Timeline -->
     <div class="main-content-area" ref="scrollContainer">
       <!-- Timeline Header -->
@@ -296,6 +298,7 @@ import {
   getRunStatusDetail
 } from '../api/simulation'
 import { generateReport } from '../api/report'
+import LlmSpendMeter from './LlmSpendMeter.vue'
 
 const { t } = useI18n()
 
@@ -677,6 +680,11 @@ const handleNextStep = async () => {
     isGeneratingReport.value = false
   }
 }
+
+// 花费达到上限时在监控日志中说明原因
+watch(() => runStatus.value.llm_spend?.exhausted, (exhausted) => {
+  if (exhausted) addLog(t('log.llmBudgetReached', { reason: runStatus.value.llm_spend.reason }))
+})
 
 // Scroll log to bottom
 const logContent = ref(null)
