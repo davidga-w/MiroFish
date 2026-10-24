@@ -19,7 +19,17 @@ from openai import OpenAI
 from ..config import Config
 from ..utils.logger import get_logger
 from ..utils.locale import get_language_instruction, get_locale, set_locale, t
-from ..utils.openai_chat_compat import create_json_chat_completion, extract_chat_completion_text
+from ..utils.llm_spend import (
+    LLMBudgetExceeded,
+    current_spend_scope,
+    reraise_if_budget_exceeded,
+    set_spend_scope,
+)
+from ..utils.openai_chat_compat import (
+    clean_chat_text,
+    create_json_chat_completion,
+    extract_chat_completion_text,
+)
 from ..utils.zep import (
     call_zep_read_with_retry,
     get_zep_client,
@@ -567,6 +577,7 @@ class OasisProfileGenerator:
         # 尝试多次生成，直到成功或达到最大重试次数
         max_attempts = 3
         last_error = None
+        partial_result = None  # bio/persona salvaged from unparseable JSON, used only as a last resort
         
         for attempt in range(max_attempts):
             try:
@@ -581,7 +592,8 @@ class OasisProfileGenerator:
                     # 不设置max_tokens，让LLM自由发挥
                 )
                 
-                content = extract_chat_completion_text(response)
+                # Replies without JSON mode arrive wrapped in a ```json fence
+                content = clean_chat_text(extract_chat_completion_text(response))
                 
                 # 检查是否被截断（finish_reason不是'stop'）
                 finish_reason = response.choices[0].finish_reason
@@ -606,6 +618,11 @@ class OasisProfileGenerator:
                     
                     # 尝试修复JSON
                     result = self._try_fix_json(content, entity_name, entity_type, entity_summary)
+                    if result.pop("_partial", False):
+                        # Only bio/persona survived; regenerate rather than lose age, MBTI, profession...
+                        partial_result = result
+                        last_error = je
+                        continue
                     if result.get("_fixed"):
                         del result["_fixed"]
                         return result
@@ -613,11 +630,17 @@ class OasisProfileGenerator:
                     last_error = je
                     
             except Exception as e:
+                reraise_if_budget_exceeded(e)
                 logger.warning(f"LLM调用失败 (attempt {attempt+1}): {str(e)[:80]}")
                 last_error = e
                 import time
                 time.sleep(1 * (attempt + 1))  # 指数退避
         
+        if partial_result is not None:
+            logger.warning(f"人设JSON {max_attempts}次均无法完整解析，使用部分提取的信息: {entity_name}")
+            partial_result.pop("_fixed", None)
+            return partial_result
+
         logger.warning(f"LLM生成人设失败（{max_attempts}次尝试）: {last_error}, 使用规则生成")
         return self._generate_profile_rule_based(
             entity_name, entity_type, entity_summary, entity_attributes
@@ -702,7 +725,8 @@ class OasisProfileGenerator:
             return {
                 "bio": bio,
                 "persona": persona,
-                "_fixed": True
+                "_fixed": True,
+                "_partial": True,
             }
         
         # 7. 完全失败，返回基础结构
@@ -959,12 +983,14 @@ class OasisProfileGenerator:
                 except Exception as e:
                     logger.warning(f"实时保存 profiles 失败: {e}")
         
-        # Capture locale before spawning thread pool workers
+        # Capture locale and spend scope before spawning thread pool workers
         current_locale = get_locale()
+        current_scope = current_spend_scope()
 
         def generate_single_profile(idx: int, entity: EntityNode) -> tuple:
             """生成单个profile的工作函数"""
             set_locale(current_locale)
+            set_spend_scope(current_scope)
             entity_type = entity.get_entity_type() or "Entity"
             
             try:
@@ -980,6 +1006,7 @@ class OasisProfileGenerator:
                 return idx, profile, None
                 
             except Exception as e:
+                reraise_if_budget_exceeded(e)
                 logger.error(f"生成实体 {entity.name} 的人设失败: {str(e)}")
                 # 创建一个基础profile
                 fallback_profile = OasisAgentProfile(
@@ -1035,6 +1062,11 @@ class OasisProfileGenerator:
                         logger.info(f"[{current}/{total}] 成功生成人设: {entity.name} ({entity_type})")
                         
                 except Exception as e:
+                    if isinstance(e, LLMBudgetExceeded):
+                        # Stop queued entities too instead of letting each one fail in turn
+                        for pending in future_to_entity:
+                            pending.cancel()
+                        raise
                     logger.error(f"处理实体 {entity.name} 时发生异常: {str(e)}")
                     with lock:
                         completed_count[0] += 1

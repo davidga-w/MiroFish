@@ -102,8 +102,8 @@ class PlatformActionLogger:
         with open(self.log_path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(entry, ensure_ascii=False) + '\n')
     
-    def log_simulation_end(self, total_rounds: int, total_actions: int):
-        """记录模拟结束"""
+    def log_simulation_end(self, total_rounds: int, total_actions: int, stop_reason: Optional[str] = None):
+        """记录模拟结束（stop_reason: 提前结束的原因，如 "budget"）"""
         entry = {
             "timestamp": datetime.now().isoformat(),
             "event_type": "simulation_end",
@@ -111,6 +111,8 @@ class PlatformActionLogger:
             "total_rounds": total_rounds,
             "total_actions": total_actions,
         }
+        if stop_reason:
+            entry["stop_reason"] = stop_reason
         
         with open(self.log_path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(entry, ensure_ascii=False) + '\n')

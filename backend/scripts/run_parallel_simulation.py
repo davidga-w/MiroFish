@@ -174,9 +174,21 @@ except ImportError as e:
     sys.exit(1)
 
 from twhin_embedding_cache import install_twhin_embedding_cache
+from llm_cost_guard import (
+    API_MAX_RETRIES,
+    LLM_CONCURRENCY,
+    budget_stop_reason,
+    configure_agent_retries,
+    guard_model,
+    install_plain_text_feeds,
+    spend_scope_for,
+    trim_agent_history,
+)
 
 # Keep the Twitter recommender's memory flat over long runs
 install_twhin_embedding_cache()
+# Keep agent feeds as plain text (no \uXXXX escapes); see llm_cost_guard
+install_plain_text_feeds()
 
 
 # Twitter可用动作（不包含INTERVIEW，INTERVIEW只能通过ManualAction手动触发）
@@ -1036,10 +1048,13 @@ def create_model(config: Dict[str, Any], use_boost: bool = False):
     
     print(f"{config_label} model={llm_model}, base_url={llm_base_url[:40] if llm_base_url else '默认'}...")
     
-    return ModelFactory.create(
+    model = ModelFactory.create(
         model_platform=ModelPlatformType.OPENAI,
         model_type=llm_model,
+        max_retries=API_MAX_RETRIES,
     )
+    # Budget-check, size-cap and record every agent request
+    return guard_model(model, scope=spend_scope_for(config), model_name=llm_model)
 
 
 def get_active_agents_for_round(
@@ -1145,6 +1160,7 @@ async def run_twitter_simulation(
         model=model,
         available_actions=TWITTER_ACTIONS,
     )
+    configure_agent_retries(result.agent_graph)
     
     # 从配置文件获取 Agent 真实名称映射（使用 entity_name 而非默认的 Agent_X）
     agent_names = get_agent_names_from_config(config)
@@ -1161,7 +1177,7 @@ async def run_twitter_simulation(
         agent_graph=result.agent_graph,
         platform=oasis.DefaultPlatformType.TWITTER,
         database_path=db_path,
-        semaphore=30,  # 限制最大并发 LLM 请求数，防止 API 过载
+        semaphore=LLM_CONCURRENCY,  # 限制最大并发 LLM 请求数，防止 API 过载
     )
     
     await result.env.reset()
@@ -1230,11 +1246,21 @@ async def run_twitter_simulation(
     
     start_time = datetime.now()
     
+    spend_scope = spend_scope_for(config)
+    stop_reason = None
+    
     for round_num in range(total_rounds):
         # 检查是否收到退出信号
         if _shutdown_event and _shutdown_event.is_set():
             if main_logger:
                 main_logger.info(f"收到退出信号，在第 {round_num + 1} 轮停止模拟")
+            break
+        
+        # Stop between rounds once the spend limit is used up
+        budget_reason = budget_stop_reason(spend_scope)
+        if budget_reason:
+            log_info(f"第 {round_num + 1} 轮前停止模拟: {budget_reason}")
+            stop_reason = "budget"
             break
         
         simulated_minutes = round_num * minutes_per_round
@@ -1257,6 +1283,9 @@ async def run_twitter_simulation(
         
         actions = {agent: LLMAction() for _, agent in active_agents}
         await result.env.step(actions)
+        # Each agent keeps only its last few turns (see llm_cost_guard)
+        for _, agent in active_agents:
+            trim_agent_history(agent)
         
         # 从数据库获取实际执行的动作并记录
         actual_actions, last_rowid = fetch_new_actions_from_db(
@@ -1286,7 +1315,7 @@ async def run_twitter_simulation(
     # 注意：不关闭环境，保留给Interview使用
     
     if action_logger:
-        action_logger.log_simulation_end(total_rounds, total_actions)
+        action_logger.log_simulation_end(total_rounds, total_actions, stop_reason=stop_reason)
     
     result.total_actions = total_actions
     elapsed = (datetime.now() - start_time).total_seconds()
@@ -1336,6 +1365,7 @@ async def run_reddit_simulation(
         model=model,
         available_actions=REDDIT_ACTIONS,
     )
+    configure_agent_retries(result.agent_graph)
     
     # 从配置文件获取 Agent 真实名称映射（使用 entity_name 而非默认的 Agent_X）
     agent_names = get_agent_names_from_config(config)
@@ -1352,7 +1382,7 @@ async def run_reddit_simulation(
         agent_graph=result.agent_graph,
         platform=oasis.DefaultPlatformType.REDDIT,
         database_path=db_path,
-        semaphore=30,  # 限制最大并发 LLM 请求数，防止 API 过载
+        semaphore=LLM_CONCURRENCY,  # 限制最大并发 LLM 请求数，防止 API 过载
     )
     
     await result.env.reset()
@@ -1429,11 +1459,21 @@ async def run_reddit_simulation(
     
     start_time = datetime.now()
     
+    spend_scope = spend_scope_for(config)
+    stop_reason = None
+    
     for round_num in range(total_rounds):
         # 检查是否收到退出信号
         if _shutdown_event and _shutdown_event.is_set():
             if main_logger:
                 main_logger.info(f"收到退出信号，在第 {round_num + 1} 轮停止模拟")
+            break
+        
+        # Stop between rounds once the spend limit is used up
+        budget_reason = budget_stop_reason(spend_scope)
+        if budget_reason:
+            log_info(f"第 {round_num + 1} 轮前停止模拟: {budget_reason}")
+            stop_reason = "budget"
             break
         
         simulated_minutes = round_num * minutes_per_round
@@ -1456,6 +1496,9 @@ async def run_reddit_simulation(
         
         actions = {agent: LLMAction() for _, agent in active_agents}
         await result.env.step(actions)
+        # Each agent keeps only its last few turns (see llm_cost_guard)
+        for _, agent in active_agents:
+            trim_agent_history(agent)
         
         # 从数据库获取实际执行的动作并记录
         actual_actions, last_rowid = fetch_new_actions_from_db(
@@ -1485,7 +1528,7 @@ async def run_reddit_simulation(
     # 注意：不关闭环境，保留给Interview使用
     
     if action_logger:
-        action_logger.log_simulation_end(total_rounds, total_actions)
+        action_logger.log_simulation_end(total_rounds, total_actions, stop_reason=stop_reason)
     
     result.total_actions = total_actions
     elapsed = (datetime.now() - start_time).total_seconds()

@@ -22,6 +22,7 @@ from ..services.simulation_runner import (
 from ..services.zep_graph_memory_updater import ZepGraphMemoryManager
 from ..utils.logger import get_logger
 from ..utils.locale import t, get_locale, set_locale
+from ..utils.llm_spend import budget_status, set_spend_scope
 from ..utils.zep_lifecycle import get_graph_readers, graph_lifecycle_lock
 from ..models.project import ProjectManager
 from ..models.task import TaskManager, TaskStatus
@@ -590,6 +591,7 @@ def _prepare_simulation_impl():
         # 定义后台任务
         def run_prepare():
             set_locale(current_locale)
+            set_spend_scope(f"prepare:{simulation_id}")
             try:
                 task_manager.update_task(
                     task_id,
@@ -1915,6 +1917,15 @@ def stop_simulation():
 
 # ============== 实时状态监控接口 ==============
 
+def _simulation_spend(simulation_id: str):
+    """Agent LLM spend so far and its limit, for the run-status display."""
+    try:
+        return budget_status(f"simulation:{simulation_id}")
+    except Exception as error:
+        logger.warning(f"读取LLM花费失败: {error}")
+        return None
+
+
 @simulation_bp.route('/<simulation_id>/run-status', methods=['GET'])
 def get_run_status(simulation_id: str):
     """
@@ -1956,12 +1967,15 @@ def get_run_status(simulation_id: str):
                     "twitter_actions_count": 0,
                     "reddit_actions_count": 0,
                     "total_actions_count": 0,
+                    "llm_spend": _simulation_spend(simulation_id),
                 }
             })
         
+        data = run_state.to_dict()
+        data["llm_spend"] = _simulation_spend(simulation_id)
         return jsonify({
             "success": True,
-            "data": run_state.to_dict()
+            "data": data
         })
         
     except Exception as e:

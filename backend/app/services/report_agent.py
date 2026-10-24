@@ -20,6 +20,7 @@ from enum import Enum
 
 from ..config import Config
 from ..utils.llm_client import LLMClient
+from ..utils.llm_spend import reraise_if_budget_exceeded
 from ..utils.logger import get_logger
 from ..utils.locale import get_language_instruction, t
 from .zep_tools import (
@@ -1064,6 +1065,7 @@ class ReportAgent:
                 return f"未知工具: {tool_name}。请使用以下工具之一: insight_forge, panorama_search, quick_search"
                 
         except Exception as e:
+            reraise_if_budget_exceeded(e)
             logger.error(t('report.toolExecFailed', toolName=tool_name, error=str(e)))
             return f"工具执行失败: {str(e)}"
     
@@ -1245,6 +1247,7 @@ class ReportAgent:
             return outline
             
         except Exception as e:
+            reraise_if_budget_exceeded(e)
             logger.error(t('report.outlinePlanFailed', error=str(e)))
             # 返回默认大纲（3个章节，作为fallback）
             return ReportOutline(

@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
+from .llm_spend import check_budget, record_response_usage
+
 
 def is_gpt5_family(model: Optional[str]) -> bool:
     """Return True when model belongs to GPT-5 family aliases/snapshots."""
@@ -55,6 +57,9 @@ def create_chat_completion(
     - For token limit, use `max_completion_tokens` on GPT-5, `max_tokens` otherwise.
     - Preserve the legacy request shape for every other model/provider.
     - Propagate provider errors unchanged instead of guessing from message text.
+
+    Every request is checked against the spend budgets before it is sent
+    (raising LLMBudgetExceeded) and its reported usage is recorded after.
     """
     kwargs: Dict[str, Any] = {
         "model": model,
@@ -79,7 +84,10 @@ def create_chat_completion(
         else:
             kwargs["max_tokens"] = max_tokens
 
-    return client.chat.completions.create(**kwargs)
+    check_budget()
+    response = client.chat.completions.create(**kwargs)
+    record_response_usage(model, response, messages)
+    return response
 
 
 def is_response_format_unsupported(error: Exception) -> bool:
@@ -159,6 +167,16 @@ def create_json_chat_completion(
         temperature=temperature,
         max_tokens=max_tokens,
     )
+
+
+def clean_chat_text(content: str) -> str:
+    """Remove common reasoning wrappers and an outer Markdown JSON fence."""
+
+    cleaned = re.sub(r'<think>[\s\S]*?</think>', '', content or '').strip()
+    cleaned = cleaned.lstrip("\ufeff")
+    cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\n?```\s*$', '', cleaned)
+    return cleaned.strip()
 
 
 def extract_chat_completion_text(response: Any) -> str:

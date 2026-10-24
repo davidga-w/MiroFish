@@ -18,6 +18,7 @@ from ..models.project import ProjectManager, ProjectStatus
 from ..models.task import TaskManager, TaskStatus
 from ..utils.logger import get_logger
 from ..utils.locale import t, get_locale, set_locale
+from ..utils.llm_spend import set_spend_scope
 from ..utils.zep_lifecycle import (
     graph_lifecycle_lock,
     register_graph_reader,
@@ -244,6 +245,8 @@ def generate_report():
 
             def run_generate():
                 set_locale(current_locale)
+                # Count this report's LLM requests against REPORT_SPEND_LIMIT_USD
+                set_spend_scope(f"report:{report_id}")
                 try:
                     task_manager.update_task(
                         task_id,

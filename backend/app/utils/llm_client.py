@@ -11,6 +11,7 @@ from openai import OpenAI
 
 from ..config import Config
 from .openai_chat_compat import (
+    clean_chat_text as _clean_chat_text,
     create_chat_completion,
     extract_chat_completion_text,
     is_response_format_unsupported,
@@ -26,16 +27,6 @@ class LLMResponseError(ValueError):
     def __init__(self, message: str, *, finish_reason: Optional[str] = None):
         super().__init__(message)
         self.finish_reason = finish_reason
-
-
-def _clean_chat_text(content: str) -> str:
-    """Remove common reasoning wrappers and an outer Markdown JSON fence."""
-
-    cleaned = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
-    cleaned = cleaned.lstrip("\ufeff")
-    cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\n?```\s*$', '', cleaned)
-    return cleaned.strip()
 
 
 def _contains_additional_json_container(content: str) -> bool:
