@@ -130,6 +130,20 @@ except ImportError as e:
     print("请先安装: pip install oasis-ai camel-ai")
     sys.exit(1)
 
+from llm_cost_guard import (
+    API_MAX_RETRIES,
+    LLM_CONCURRENCY,
+    budget_stop_reason,
+    configure_agent_retries,
+    guard_model,
+    install_plain_text_feeds,
+    spend_scope_for,
+    trim_agent_history,
+)
+
+# Keep agent feeds as plain text (no \uXXXX escapes); see llm_cost_guard
+install_plain_text_feeds()
+
 
 # IPC相关常量
 IPC_COMMANDS_DIR = "ipc_commands"
@@ -461,10 +475,13 @@ class RedditSimulationRunner:
         
         print(f"LLM配置: model={llm_model}, base_url={llm_base_url[:40] if llm_base_url else '默认'}...")
         
-        return ModelFactory.create(
+        model = ModelFactory.create(
             model_platform=ModelPlatformType.OPENAI,
             model_type=llm_model,
+            max_retries=API_MAX_RETRIES,
         )
+        # Budget-check, size-cap and record every agent request
+        return guard_model(model, scope=spend_scope_for(self.config), model_name=llm_model)
     
     def _get_active_agents_for_round(
         self, 
@@ -567,6 +584,7 @@ class RedditSimulationRunner:
             model=model,
             available_actions=self.AVAILABLE_ACTIONS,
         )
+        configure_agent_retries(self.agent_graph)
         
         db_path = self._get_db_path()
         if os.path.exists(db_path):
@@ -578,7 +596,7 @@ class RedditSimulationRunner:
             agent_graph=self.agent_graph,
             platform=oasis.DefaultPlatformType.REDDIT,
             database_path=db_path,
-            semaphore=30,  # 限制最大并发 LLM 请求数，防止 API 过载
+            semaphore=LLM_CONCURRENCY,  # 限制最大并发 LLM 请求数，防止 API 过载
         )
         
         await self.env.reset()
@@ -623,7 +641,14 @@ class RedditSimulationRunner:
         print("\n开始模拟循环...")
         start_time = datetime.now()
         
+        spend_scope = spend_scope_for(self.config)
         for round_num in range(total_rounds):
+            # Stop between rounds once the spend limit is used up
+            budget_reason = budget_stop_reason(spend_scope)
+            if budget_reason:
+                print(f"\n第 {round_num + 1} 轮前停止模拟: {budget_reason}")
+                break
+            
             simulated_minutes = round_num * minutes_per_round
             simulated_hour = (simulated_minutes // 60) % 24
             simulated_day = simulated_minutes // (60 * 24) + 1
@@ -641,6 +666,9 @@ class RedditSimulationRunner:
             }
             
             await self.env.step(actions)
+            # Each agent keeps only its last few turns (see llm_cost_guard)
+            for _, agent in active_agents:
+                trim_agent_history(agent)
             
             if (round_num + 1) % 10 == 0 or round_num == 0:
                 elapsed = (datetime.now() - start_time).total_seconds()
